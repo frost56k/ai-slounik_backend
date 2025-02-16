@@ -2,7 +2,6 @@ from flask import Blueprint, request, jsonify
 import logging
 import os
 from dotenv import load_dotenv
-from flask_cors import CORS
 from openai import OpenAI
 
 # Загрузка переменных окружения
@@ -11,65 +10,70 @@ load_dotenv()
 # Создание Blueprint
 main = Blueprint('main', __name__)
 
-# Настройка CORS для Blueprint
-CORS(main)
-
 # Получение API ключа из переменных окружения
 openrouter_api_key = os.getenv("OPENROUTER_API_KEY")
 
-# Чтение системного промпта из файла
-file_path = os.path.join(os.path.dirname(__file__), 'system_prompt.json')
-with open(file_path, 'r', encoding='utf-8') as file:
-    system_content = file.read()
+# Путь к системному промпту
+current_dir = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(current_dir, 'system_prompt.json')
+
+try:
+    with open(file_path, 'r', encoding='utf-8') as file:
+        system_content = file.read()
+except FileNotFoundError:
+    logging.error("Файл system_prompt.json не найден!")
+    system_content = ""
 
 # Инициализация клиента OpenAI
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=openrouter_api_key,
-)
+) if openrouter_api_key else None
 
 @main.route('/api/query', methods=['POST'])
 def query_deepseek():
     try:
-        data = request.json
+        if not client:
+            logging.error("OpenAI клиент не инициализирован")
+            return jsonify({'error': 'Ошибка конфигурации сервера'}), 500
+
+        logging.info("Запрос получен на /api/query")
+        data = request.get_json()
+        
+        if not data:
+            logging.error("Отсутствует тело запроса")
+            return jsonify({'error': 'Неверный формат запроса'}), 400
+            
         user_input = data.get('input')
 
-        if not openrouter_api_key:
-            logging.error("API ключ не найден.")
-            return jsonify({'error': 'Ошибка системы. Попробуйте позже.'}), 500
+        if not user_input or not user_input.strip():
+            logging.error("Пустой запрос от пользователя")
+            return jsonify({'error': 'Запрос не может быть пустым'}), 400
 
-        if not user_input:
-            logging.error("Пустой запрос от пользователя.")
-            return jsonify({'error': 'Запрос не может быть пустым.'}), 400
+        logging.debug(f"Обработка запроса: {user_input[:50]}...")
 
-        # Логирование system_content и user_input
-        logging.info(f"Содержимое system_content: {system_content}")
-        logging.info(f"Запрос от пользователя: {user_input}")
-
-        # Отправка запроса на сервер OpenRouter
         completion = client.chat.completions.create(
             extra_headers={
-                "HTTP-Referer": "<YOUR_SITE_URL>",  # Укажите URL вашего сайта
-                "X-Title": "<YOUR_SITE_NAME>",  # Укажите название вашего сайта
+                "HTTP-Referer": "https://ai-slounik.andchar.of.by",
+                "X-Title": "AI Slounik",
             },
-            extra_body={},
             model="google/gemini-2.0-flash-lite-preview-02-05:free",
             messages=[
-                {
-                    "role": "system",
-                    "content": system_content,
-                },
-                {
-                    "role": "user",
-                    "content": user_input,
-                }
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": user_input}
             ]
         )
 
-        logging.info(f"Ответ от сервера: {completion.choices[0].message.content}")
+        if not completion.choices[0].message.content:
+            logging.error("Пустой ответ от API")
+            return jsonify({'error': 'Ошибка обработки запроса'}), 500
 
-        return jsonify({'response': completion.choices[0].message.content})
+        logging.info("Успешный ответ от API")
+        return jsonify({
+            'response': completion.choices[0].message.content,
+            'model': completion.model
+        })
 
     except Exception as e:
-        logging.error(f"Ошибка API: {e}")
-        return jsonify({'error': str(e)}), 500
+        logging.error(f"Критическая ошибка: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Внутренняя ошибка сервера'}), 500
